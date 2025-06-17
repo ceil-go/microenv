@@ -51,7 +51,7 @@ type CustomGetFunc func(key string, m *MicroEnv, caller interface{}) (interface{
 type CustomSetFunc func(key string, val interface{}, m *MicroEnv, caller interface{})
 
 type MicroEnv struct {
-	data     sync.Map // map[string]interface{}
+	Data     sync.Map // map[string]interface{}
 	awaiters sync.Map // map[string]*Awaiter
 
 	customGet CustomGetFunc
@@ -78,7 +78,7 @@ func NewMicroEnv(data map[string]interface{}, opts ...MicroEnvOption) *MicroEnv 
 		face: make(map[string]*FacePropertyAPI),
 	}
 	for k, v := range data {
-		m.data.Store(k, v)
+		m.Data.Store(k, v)
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -92,7 +92,7 @@ func (m *MicroEnv) Get(key string, next bool, caller interface{}) (interface{}, 
 			ret, ok := m.customGet(key, m, caller) // pass m instead of snapshot
 			return ret, nil, ok
 		}
-		val, ok := m.data.Load(key)
+		val, ok := m.Data.Load(key)
 		return val, nil, ok
 	}
 	awRaw, _ := m.awaiters.LoadOrStore(key, newAwaiter())
@@ -101,7 +101,7 @@ func (m *MicroEnv) Get(key string, next bool, caller interface{}) (interface{}, 
 }
 
 func (m *MicroEnv) Set(key string, val interface{}, caller interface{}) {
-	m.data.Store(key, val)
+	m.Data.Store(key, val)
 	if m.customSet != nil {
 		m.customSet(key, val, m, caller) // pass m instead of snapshot
 	}
@@ -114,7 +114,7 @@ func (m *MicroEnv) Set(key string, val interface{}, caller interface{}) {
 
 // Only supports 3-argument functions!
 func (m *MicroEnv) Call(key string, payload interface{}, caller interface{}) ([]interface{}, bool) {
-	valRaw, ok := m.data.Load(key)
+	valRaw, ok := m.Data.Load(key)
 	if !ok {
 		return nil, false
 	}
@@ -183,7 +183,7 @@ func (m *MicroEnv) ensureFaceForUnlocked(key string) {
 func (m *MicroEnv) Face() map[string]*FacePropertyAPI {
 	m.faceMu.Lock()
 	defer m.faceMu.Unlock()
-	m.data.Range(func(k, v interface{}) bool {
+	m.Data.Range(func(k, v interface{}) bool {
 		key := k.(string)
 		m.ensureFaceForUnlocked(key)
 		return true
@@ -239,7 +239,7 @@ func (m *MicroEnv) Descriptor() map[string]interface{} {
 		return m.customDescriptor
 	}
 	children := []map[string]interface{}{}
-	m.data.Range(func(k, v interface{}) bool {
+	m.Data.Range(func(k, v interface{}) bool {
 		children = append(children, map[string]interface{}{
 			"key":  k.(string),
 			"type": simpleType(v),
