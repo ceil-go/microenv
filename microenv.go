@@ -5,21 +5,47 @@ import (
 	"sync"
 )
 
+// Awaiter supports multiple concurrent waiters and broadcasts the value to all.
+// Awaiters are auto-cleaned after resolve.
 type Awaiter struct {
-	once sync.Once
-	ch   chan interface{}
+	mu   sync.Mutex
+	done bool
+	val  interface{}
+	chs  []chan interface{}
 }
 
 func newAwaiter() *Awaiter {
-	return &Awaiter{ch: make(chan interface{}, 1)}
+	return &Awaiter{chs: make([]chan interface{}, 0)}
 }
+
+func (w *Awaiter) addWaiter() <-chan interface{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ch := make(chan interface{}, 1)
+	if w.done {
+		ch <- w.val
+		close(ch)
+		return ch
+	}
+	w.chs = append(w.chs, ch)
+	return ch
+}
+
 func (w *Awaiter) resolve(val interface{}) {
-	w.once.Do(func() {
-		w.ch <- val
-		close(w.ch)
-	})
+	w.mu.Lock()
+	if w.done {
+		w.mu.Unlock()
+		return
+	}
+	w.done = true
+	w.val = val
+	for _, ch := range w.chs {
+		ch <- val
+		close(ch)
+	}
+	w.chs = nil
+	w.mu.Unlock()
 }
-func (w *Awaiter) Chan() <-chan interface{} { return w.ch }
 
 type CustomGetFunc func(key string, data map[string]interface{}, caller interface{}) (interface{}, bool)
 type CustomSetFunc func(key string, val interface{}, data map[string]interface{}, caller interface{})
@@ -32,7 +58,7 @@ type MicroEnv struct {
 	customSet CustomSetFunc
 
 	faceMu sync.Mutex
-	face   map[string]*FaceAPI // lazily init/update on demand
+	face   map[string]*FacePropertyAPI // lazily init/update on demand
 
 	customDescriptor map[string]interface{}
 }
@@ -49,7 +75,7 @@ func WithCustomDescriptor(desc map[string]interface{}) MicroEnvOption {
 
 func NewMicroEnv(data map[string]interface{}, opts ...MicroEnvOption) *MicroEnv {
 	m := &MicroEnv{
-		face: make(map[string]*FaceAPI),
+		face: make(map[string]*FacePropertyAPI),
 	}
 	for k, v := range data {
 		m.data.Store(k, v)
@@ -78,8 +104,9 @@ func (m *MicroEnv) Get(key string, next bool, caller interface{}) (interface{}, 
 		val, ok := m.data.Load(key)
 		return val, nil, ok
 	}
-	actual, _ := m.awaiters.LoadOrStore(key, newAwaiter())
-	return nil, actual.(*Awaiter).Chan(), true
+	awRaw, _ := m.awaiters.LoadOrStore(key, newAwaiter())
+	aw := awRaw.(*Awaiter)
+	return nil, aw.addWaiter(), true
 }
 
 func (m *MicroEnv) Set(key string, val interface{}, caller interface{}) {
@@ -125,7 +152,7 @@ func (m *MicroEnv) Call(key string, payload interface{}, caller interface{}) ([]
 	return res, true
 }
 
-type FaceAPI struct {
+type FacePropertyAPI struct {
 	Get func(caller interface{}) (interface{}, bool)
 	Set func(val interface{}, caller interface{})
 }
@@ -135,7 +162,7 @@ func (m *MicroEnv) ensureFaceFor(key string) {
 	defer m.faceMu.Unlock()
 	if _, exists := m.face[key]; !exists {
 		k := key // capture
-		m.face[k] = &FaceAPI{
+		m.face[k] = &FacePropertyAPI{
 			Get: func(caller interface{}) (interface{}, bool) {
 				val, _, ok := m.Get(k, false, caller)
 				return val, ok
@@ -150,7 +177,7 @@ func (m *MicroEnv) ensureFaceFor(key string) {
 func (m *MicroEnv) ensureFaceForUnlocked(key string) {
 	if _, exists := m.face[key]; !exists {
 		k := key // closure safety
-		m.face[k] = &FaceAPI{
+		m.face[k] = &FacePropertyAPI{
 			Get: func(caller interface{}) (interface{}, bool) {
 				val, _, ok := m.Get(k, false, caller)
 				return val, ok
@@ -162,7 +189,7 @@ func (m *MicroEnv) ensureFaceForUnlocked(key string) {
 	}
 }
 
-func (m *MicroEnv) Face() map[string]*FaceAPI {
+func (m *MicroEnv) Face() map[string]*FacePropertyAPI {
 	m.faceMu.Lock()
 	defer m.faceMu.Unlock()
 	m.data.Range(func(k, v interface{}) bool {
@@ -170,14 +197,14 @@ func (m *MicroEnv) Face() map[string]*FaceAPI {
 		m.ensureFaceForUnlocked(key)
 		return true
 	})
-	result := make(map[string]*FaceAPI, len(m.face))
+	result := make(map[string]*FacePropertyAPI, len(m.face))
 	for k, f := range m.face {
 		result[k] = f
 	}
 	return result
 }
 
-func jsType(val interface{}) string {
+func simpleType(val interface{}) string {
 	switch val.(type) {
 	case nil:
 		return "null"
@@ -208,7 +235,9 @@ func jsType(val interface{}) string {
 	case reflect.Map, reflect.Struct:
 		return "object"
 	case reflect.Ptr:
-		return jsType(reflect.Indirect(reflect.ValueOf(val)).Interface())
+		return simpleType(reflect.Indirect(reflect.ValueOf(val)).Interface())
+	case reflect.Chan:
+		return "promise"
 	default:
 		return "object"
 	}
@@ -222,7 +251,7 @@ func (m *MicroEnv) Descriptor() map[string]interface{} {
 	m.data.Range(func(k, v interface{}) bool {
 		children = append(children, map[string]interface{}{
 			"key":  k.(string),
-			"type": jsType(v),
+			"type": simpleType(v),
 		})
 		return true
 	})
@@ -267,9 +296,9 @@ func (m *MicroEnv) Descriptor() map[string]interface{} {
 // 			"currentCount": 0,
 // 			"foo":          "bar",
 // 		},
-// 		WithCustomGet(customGet),
-// 		WithCustomSet(customSet),
-// 		WithCustomDescriptor(myDescriptor),
+// 		microenv.WithCustomGet(customGet),
+// 		microenv.WithCustomSet(customSet),
+// 		microenv.WithCustomDescriptor(myDescriptor),
 // 	)
 
 // 	env.Set("foo", 10, nil)
@@ -296,10 +325,10 @@ func (m *MicroEnv) Descriptor() map[string]interface{} {
 
 // 	// Face usage:
 // 	nameFun, _ := face["greetingFunction"].Get(nil)
-// 	fmt.Println("Face greet:", nameFun.(func(interface{}, map[string]interface{}, interface{}) string)("FaceUser", env.snapshot(), nil))
+// 	fmt.Println("Face greet:", nameFun.(func(interface{}, map[string]interface{}, interface{}) string)("FaceUser", nil, nil))
 
 // 	addFun, _ := face["additionFunction"].Get("adder")
-// 	fmt.Println("Face add:", addFun.(func(interface{}, map[string]interface{}, interface{}) int)([]int{10, 5}, env.snapshot(), "adder"))
+// 	fmt.Println("Face add:", addFun.(func(interface{}, map[string]interface{}, interface{}) int)([]int{10, 5}, nil, "adder"))
 
 // 	env.Set("flexFunc", func(payload interface{}, data map[string]interface{}, caller interface{}) string {
 // 		return fmt.Sprintf("[FLEXFUNC CALLED] caller=%v data[foo]=%v payload=%#v", caller, data["foo"], payload)
