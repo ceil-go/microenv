@@ -47,8 +47,8 @@ func (w *Awaiter) resolve(val interface{}) {
 	w.mu.Unlock()
 }
 
-type CustomGetFunc func(key string, data map[string]interface{}, caller interface{}) (interface{}, bool)
-type CustomSetFunc func(key string, val interface{}, data map[string]interface{}, caller interface{})
+type CustomGetFunc func(key string, m *MicroEnv, caller interface{}) (interface{}, bool)
+type CustomSetFunc func(key string, val interface{}, m *MicroEnv, caller interface{})
 
 type MicroEnv struct {
 	data     sync.Map // map[string]interface{}
@@ -86,19 +86,10 @@ func NewMicroEnv(data map[string]interface{}, opts ...MicroEnvOption) *MicroEnv 
 	return m
 }
 
-func (m *MicroEnv) snapshot() map[string]interface{} {
-	tmp := make(map[string]interface{})
-	m.data.Range(func(k, v interface{}) bool {
-		tmp[k.(string)] = v
-		return true
-	})
-	return tmp
-}
-
 func (m *MicroEnv) Get(key string, next bool, caller interface{}) (interface{}, <-chan interface{}, bool) {
 	if !next {
 		if m.customGet != nil {
-			ret, ok := m.customGet(key, m.snapshot(), caller)
+			ret, ok := m.customGet(key, m, caller) // pass m instead of snapshot
 			return ret, nil, ok
 		}
 		val, ok := m.data.Load(key)
@@ -112,7 +103,7 @@ func (m *MicroEnv) Get(key string, next bool, caller interface{}) (interface{}, 
 func (m *MicroEnv) Set(key string, val interface{}, caller interface{}) {
 	m.data.Store(key, val)
 	if m.customSet != nil {
-		m.customSet(key, val, m.snapshot(), caller)
+		m.customSet(key, val, m, caller) // pass m instead of snapshot
 	}
 	if aw, ok := m.awaiters.Load(key); ok {
 		aw.(*Awaiter).resolve(val)
@@ -137,7 +128,7 @@ func (m *MicroEnv) Call(key string, payload interface{}, caller interface{}) ([]
 		return nil, false
 	}
 	args := make([]reflect.Value, 3)
-	for i, v := range []interface{}{payload, m.snapshot(), caller} {
+	for i, v := range []interface{}{payload, m, caller} { // use m here
 		if v == nil {
 			args[i] = reflect.Zero(typ.In(i))
 		} else {

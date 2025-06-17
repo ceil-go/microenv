@@ -26,11 +26,11 @@ func TestMicroEnv_SetAndGet(t *testing.T) {
 
 func TestMicroEnv_CustomGetSet(t *testing.T) {
 	getCalled, setCalled := false, false
-	customGet := func(key string, d map[string]interface{}, caller interface{}) (interface{}, bool) {
+	customGet := func(key string, env *MicroEnv, caller interface{}) (interface{}, bool) {
 		getCalled = true
 		return "CUSTOM-" + key, true
 	}
-	customSet := func(key string, val interface{}, d map[string]interface{}, caller interface{}) {
+	customSet := func(key string, val interface{}, env *MicroEnv, caller interface{}) {
 		setCalled = true
 	}
 	env := NewMicroEnv(map[string]interface{}{}, WithCustomGet(customGet), WithCustomSet(customSet))
@@ -69,11 +69,11 @@ func TestMicroEnv_Awaiters(t *testing.T) {
 
 func TestMicroEnv_Call(t *testing.T) {
 	env := NewMicroEnv(map[string]interface{}{
-		"sumfn": func(payload interface{}, data map[string]interface{}, caller interface{}) int {
+		"sumfn": func(payload interface{}, env *MicroEnv, caller interface{}) int {
 			arr := payload.([]int)
 			return arr[0] + arr[1]
 		},
-		"strfn": func(payload interface{}, data map[string]interface{}, caller interface{}) string {
+		"strfn": func(payload interface{}, env *MicroEnv, caller interface{}) string {
 			return "hi:" + payload.(string)
 		},
 		"badfn": func(a int) {},
@@ -119,7 +119,7 @@ func TestMicroEnv_FaceAPI(t *testing.T) {
 
 func TestMicroEnv_FaceForFunction(t *testing.T) {
 	env := NewMicroEnv(map[string]interface{}{
-		"f": func(payload interface{}, data map[string]interface{}, caller interface{}) string {
+		"f": func(payload interface{}, env *MicroEnv, caller interface{}) string {
 			return payload.(string) + "-xx"
 		},
 	})
@@ -127,7 +127,7 @@ func TestMicroEnv_FaceForFunction(t *testing.T) {
 	if !ok {
 		t.Error("Face Get for function failed")
 	}
-	out := fn.(func(interface{}, map[string]interface{}, interface{}) string)("abc", nil, nil)
+	out := fn.(func(interface{}, *MicroEnv, interface{}) string)("abc", env, nil)
 	if out != "abc-xx" {
 		t.Errorf("function call via Face wrong output: %v", out)
 	}
@@ -139,7 +139,7 @@ func TestMicroEnv_Descriptor(t *testing.T) {
 		"b": "x",
 		"c": true,
 		"d": []int{1, 2},
-		"f": func(interface{}, map[string]interface{}, interface{}) string { return "" },
+		"f": func(interface{}, *MicroEnv, interface{}) string { return "" },
 	})
 	desc := env.Descriptor()
 	children, ok := desc["children"].([]map[string]interface{})
@@ -281,7 +281,7 @@ func TestMicroEnv_Call_FuncSignatureMismatch(t *testing.T) {
 	val, ok := face["badfn"].Get(nil)
 	if !ok {
 		// It's OK for Get to succeed, but type will be bad.
-		_, isFunc := val.(func(interface{}, map[string]interface{}, interface{}) int)
+		_, isFunc := val.(func(interface{}, *MicroEnv, interface{}) int)
 		if isFunc {
 			t.Error("badfn should not be convertible to correct func signature")
 		}
