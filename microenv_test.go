@@ -1,6 +1,7 @@
 package microenv
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -61,11 +62,11 @@ func TestMicroEnvCustomGetSet(t *testing.T) {
 	getCalled, setCalled := false, false
 	env := NewMicroEnv(
 		map[string]interface{}{"x": 0},
-		WithCustomGet(func(key string, m *MicroEnv, caller string) (interface{}, bool) {
+		WithCustomGet(func(key string, data *sync.Map, caller string) (interface{}, bool) {
 			getCalled = true
 			return 555, true
 		}),
-		WithCustomSet(func(key string, val interface{}, m *MicroEnv, caller string) {
+		WithCustomSet(func(key string, val interface{}, data *sync.Map, caller string) {
 			setCalled = true
 		}),
 	)

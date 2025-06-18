@@ -45,8 +45,8 @@ func (w *Awaiter) resolve(val interface{}) {
 	w.mu.Unlock()
 }
 
-type CustomGetFunc func(key string, m *MicroEnv, caller string) (interface{}, bool)
-type CustomSetFunc func(key string, val interface{}, m *MicroEnv, caller string)
+type CustomGetFunc func(key string, data *sync.Map, caller string) (interface{}, bool)
+type CustomSetFunc func(key string, val interface{}, data *sync.Map, caller string)
 
 type MicroEnv struct {
 	data     sync.Map // map[string]interface{}
@@ -129,7 +129,7 @@ func (m *MicroEnv) Get(key string, next bool, caller string) (interface{}, <-cha
 	}
 	if !next {
 		if m.customGet != nil {
-			ret, ok := m.customGet(key, m, caller)
+			ret, ok := m.customGet(key, &m.data, caller)
 			return ret, nil, ok
 		}
 		val, ok := m.data.Load(key)
@@ -146,7 +146,7 @@ func (m *MicroEnv) Set(key string, val interface{}, caller string) {
 	}
 	m.data.Store(key, val)
 	if m.customSet != nil {
-		m.customSet(key, val, m, caller)
+		m.customSet(key, val, &m.data, caller)
 	}
 	if aw, ok := m.awaiters.Load(key); ok {
 		aw.(*Awaiter).resolve(val)
