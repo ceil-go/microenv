@@ -172,7 +172,7 @@ func (m *MicroEnv) Call(key string, payload interface{}, caller string) ([]inter
 	}
 	// Prepare args with caller as string
 	args := make([]reflect.Value, 3)
-	for i, v := range []interface{}{payload, m, caller} {
+	for i, v := range []interface{}{payload, &m.data, caller} {
 		if v == nil {
 			args[i] = reflect.Zero(typ.In(i))
 		} else {
