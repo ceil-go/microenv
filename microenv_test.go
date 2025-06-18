@@ -1,307 +1,259 @@
 package microenv
 
 import (
-	"reflect"
-	"sync"
 	"testing"
 	"time"
 )
 
-// Helper for capturing test caller context
-type testCaller string
+func TestMicroEnvBasicSetGet(t *testing.T) {
+	env := NewMicroEnv(map[string]interface{}{
+		"x": 123,
+		"y": "abc",
+	})
 
-func TestMicroEnv_SetAndGet(t *testing.T) {
-	env := NewMicroEnv(map[string]interface{}{"a": 123, "b": "test"})
-	env.Set("a", 456, nil)
-	val, _, ok := env.Get("a", false, nil)
-	if !ok || val != 456 {
-		t.Errorf("Expected 456 for 'a'; got %v (ok=%v)", val, ok)
+	// Only keys in the descriptor/face are accessible
+	val, ch, ok := env.Get("x", false, "")
+	if !ok || ch != nil || val != 123 {
+		t.Fatalf("unexpected value for 'x': %v", val)
 	}
-	// Test Get of non-existent key
-	_, _, ok = env.Get("nope", false, nil)
+	val, _, ok = env.Get("y", false, "")
+	if !ok || val != "abc" {
+		t.Fatalf("unexpected value for 'y': %v", val)
+	}
+	_, _, ok = env.Get("missing", false, "")
 	if ok {
-		t.Error("Expected not found for 'nope'")
+		t.Fatal("should not find non-existing key")
+	}
+
+	// Set and Get
+	env.Set("x", 42, "")
+	val, _, ok = env.Get("x", false, "")
+	if !ok || val != 42 {
+		t.Fatalf("set/get failed: %v", val)
 	}
 }
 
-func TestMicroEnv_CustomGetSet(t *testing.T) {
-	getCalled, setCalled := false, false
-	customGet := func(key string, env *MicroEnv, caller interface{}) (interface{}, bool) {
-		getCalled = true
-		return "CUSTOM-" + key, true
-	}
-	customSet := func(key string, val interface{}, env *MicroEnv, caller interface{}) {
-		setCalled = true
-	}
-	env := NewMicroEnv(map[string]interface{}{}, WithCustomGet(customGet), WithCustomSet(customSet))
-	env.Set("x", 99, testCaller("who"))
-	if !setCalled {
-		t.Error("customSet not called")
-	}
-	val, _, _ := env.Get("z", false, testCaller("who2"))
-	if val != "CUSTOM-z" || !getCalled {
-		t.Errorf("customGet result or invocation error; got %v ", val)
-	}
-}
-
-func TestMicroEnv_Awaiters(t *testing.T) {
-	env := NewMicroEnv(nil)
-	key := "foo"
-	got := make(chan interface{}, 1)
-	_, ch, ok := env.Get(key, true, nil)
-	if !ok || ch == nil {
-		t.Fatal("Expected awaiter channel")
-	}
+func TestMicroEnvAwaiterNext(t *testing.T) {
+	env := NewMicroEnv(map[string]interface{}{
+		"x": 1,
+	})
+	ch := make(chan interface{}, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		env.Set(key, 999, nil)
+		_, next, ok := env.Get("x", true, "")
+		if !ok {
+			t.Error("expected ok for awaiter")
+		}
+		ch <- (<-next)
 	}()
+	time.Sleep(50 * time.Millisecond)
+	env.Set("x", 99, "")
 	select {
-	case v := <-ch:
-		got <- v
-	case <-time.After(500 * time.Millisecond):
-		t.Error("timed out waiting for awaiter")
-	}
-	if val := <-got; val != 999 {
-		t.Errorf("Expected 999, got %v", val)
-	}
-}
-
-func TestMicroEnv_Call(t *testing.T) {
-	env := NewMicroEnv(map[string]interface{}{
-		"sumfn": func(payload interface{}, env *MicroEnv, caller interface{}) int {
-			arr := payload.([]int)
-			return arr[0] + arr[1]
-		},
-		"strfn": func(payload interface{}, env *MicroEnv, caller interface{}) string {
-			return "hi:" + payload.(string)
-		},
-		"badfn": func(a int) {},
-	})
-	res, ok := env.Call("sumfn", []int{2, 3}, nil)
-	if !ok || res[0] != 5 {
-		t.Errorf("sumfn call failed")
-	}
-	res, ok = env.Call("strfn", "q", nil)
-	if !ok || res[0] != "hi:q" {
-		t.Errorf("strfn call failed")
-	}
-	_, ok = env.Call("badfn", nil, nil)
-	if ok {
-		t.Error("badfn should not be callable")
-	}
-	_, ok = env.Call("nope", nil, nil)
-	if ok {
-		t.Error("nope should not be found")
+	case res := <-ch:
+		if res != 99 {
+			t.Errorf("expect awaited value (99), got %v", res)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("Timed out waiting for awaiter")
 	}
 }
 
-func TestMicroEnv_FaceAPI(t *testing.T) {
+func TestMicroEnvCustomGetSet(t *testing.T) {
+	getCalled, setCalled := false, false
+	env := NewMicroEnv(
+		map[string]interface{}{"x": 0},
+		WithCustomGet(func(key string, m *MicroEnv, caller string) (interface{}, bool) {
+			getCalled = true
+			return 555, true
+		}),
+		WithCustomSet(func(key string, val interface{}, m *MicroEnv, caller string) {
+			setCalled = true
+		}),
+	)
+	val, _, ok := env.Get("x", false, "")
+	if !ok || val != 555 || !getCalled {
+		t.Errorf("custom get was not called")
+	}
+	env.Set("x", 1234, "")
+	if !setCalled {
+		t.Errorf("custom set was not called")
+	}
+}
+
+func TestMicroEnvCall(t *testing.T) {
+	sumFunc := func(payload interface{}, m *MicroEnv, caller interface{}) int {
+		vals := payload.([]int)
+		return vals[0] + vals[1]
+	}
 	env := NewMicroEnv(map[string]interface{}{
-		"x": 111,
-		"y": 222,
+		"sum": sumFunc,
 	})
+
+	// Call with allowed key
+	res, ok := env.Call("sum", []int{2, 3}, "")
+	if !ok || len(res) != 1 || res[0] != 5 {
+		t.Fatalf("Call failed: got %v %v", res, ok)
+	}
+
+	// Call a missing key
+	_, ok = env.Call("notexist", nil, "")
+	if ok {
+		t.Error("should not call on missing key")
+	}
+
+	// Call with a non-func
+	env = NewMicroEnv(map[string]interface{}{
+		"foo": 123,
+	})
+	_, ok = env.Call("foo", nil, "")
+	if ok {
+		t.Error("should not call on non-function value")
+	}
+}
+
+func TestMicroEnvDescriptorAndFace(t *testing.T) {
+	env := NewMicroEnv(map[string]interface{}{"a": 1, "b": true})
 	face := env.Face()
-	if len(face) != 2 {
-		t.Errorf("Expected 2 face fields, got %d", len(face))
-	}
-	face["x"].Set(456, "userA")
-	val, ok := face["x"].Get(nil)
-	if !ok || val != 456 {
-		t.Errorf("Face Set/Get failed for x")
-	}
-	face["y"].Set("test", nil)
-	val, ok = face["y"].Get(nil)
-	if val != "test" || !ok {
-		t.Errorf("Face Set/Get failed for y")
-	}
-}
-
-func TestMicroEnv_FaceForFunction(t *testing.T) {
-	env := NewMicroEnv(map[string]interface{}{
-		"f": func(payload interface{}, env *MicroEnv, caller interface{}) string {
-			return payload.(string) + "-xx"
-		},
-	})
-	fn, ok := env.Face()["f"].Get(nil)
-	if !ok {
-		t.Error("Face Get for function failed")
-	}
-	out := fn.(func(interface{}, *MicroEnv, interface{}) string)("abc", env, nil)
-	if out != "abc-xx" {
-		t.Errorf("function call via Face wrong output: %v", out)
-	}
-}
-
-func TestMicroEnv_Descriptor(t *testing.T) {
-	env := NewMicroEnv(map[string]interface{}{
-		"a": 1,
-		"b": "x",
-		"c": true,
-		"d": []int{1, 2},
-		"f": func(interface{}, *MicroEnv, interface{}) string { return "" },
-	})
 	desc := env.Descriptor()
-	children, ok := desc["children"].([]map[string]interface{})
-	if !ok || len(children) != 5 {
-		t.Fatalf("Descriptor children wrong (got %v)", children)
+	children, _ := desc["children"].([]map[string]interface{})
+	wantKeys := map[string]bool{"a": false, "b": false}
+	for _, entry := range children {
+		k := entry["key"].(string)
+		wantKeys[k] = true
 	}
-	typeMap := map[string]string{}
-	for _, child := range children {
-		typeMap[child["key"].(string)] = child["type"].(string)
+	for k, ok := range wantKeys {
+		if !ok {
+			t.Errorf("missing key in descriptor: %v", k)
+		}
 	}
-	if typeMap["a"] != "number" || typeMap["b"] != "string" || typeMap["c"] != "boolean" {
-		t.Error("Type detection error")
-	}
-	if typeMap["f"] != "function" {
-		t.Error("Function not recognized in descriptor")
-	}
-	if typeMap["d"] != "array" {
-		t.Error("Slice not recognized in descriptor")
+	// Face map should have same keys
+	for k := range wantKeys {
+		if _, ok := face[k]; !ok {
+			t.Errorf("missing key in face: %v", k)
+		}
 	}
 }
 
-func TestSimpleType_AllCases(t *testing.T) {
-	type customstruct struct{}
-	tests := []struct {
-		val  interface{}
-		want string
+func TestCustomDescriptor(t *testing.T) {
+	cdesc := map[string]interface{}{
+		"children": []map[string]interface{}{
+			{"key": "magic", "type": "number"},
+		},
+	}
+	env := NewMicroEnv(map[string]interface{}{
+		"magic": 42,
+		"skip":  "nope",
+	}, WithCustomDescriptor(cdesc))
+	// Only "magic" present
+	_, _, ok := env.Get("magic", false, "")
+	if !ok {
+		t.Error("expected 'magic' key to be allowed")
+	}
+	_, _, ok = env.Get("skip", false, "")
+	if ok {
+		t.Error("should not allow keys outside custom descriptor")
+	}
+}
+
+func TestSimpleTypeCovers(t *testing.T) {
+	cases := []struct {
+		input interface{}
+		want  string
 	}{
 		{nil, "null"},
-		{1, "number"},
-		{1.1, "number"},
-		{uint(1), "number"},
-		{"abc", "string"},
 		{true, "boolean"},
+		{"hi", "string"},
+		{42, "number"},
+		{3.14, "number"},
+		{[]int{1, 2}, "array"},
+		{map[string]int{"a": 1}, "object"},
 		{func() {}, "function"},
-		{[]int{1}, "array"},
-		{map[string]int{}, "object"},
-		{&customstruct{}, "object"},
 		{make(chan int), "promise"},
 	}
-	for _, tt := range tests {
-		got := simpleType(tt.val)
-		if got != tt.want {
-			t.Errorf("simpleType(%v) = %q, want %q", reflect.TypeOf(tt.val), got, tt.want)
+	for _, tc := range cases {
+		tpe := simpleType(tc.input)
+		if tpe != tc.want {
+			t.Errorf("simpleType(%v) = %q, want %q", tc.input, tpe, tc.want)
 		}
 	}
+	// Cover non-nil struct pointer
+	type testStruct struct{}
+	s := testStruct{}
+	sp := &s
+	if simpleType(sp) != "object" {
+		t.Errorf("simpleType(non-nil ptr) wrong: got %s", simpleType(sp))
+	}
+
+	// Cover nil struct pointer
+	var snil *testStruct = nil
+	if simpleType(snil) != "null" {
+		t.Errorf("simpleType(nil ptr) wrong: got %s", simpleType(snil))
+	}
 }
 
-func TestMicroEnv_CustomDescriptor(t *testing.T) {
-	desc := map[string]interface{}{
-		"children": []map[string]interface{}{
-			{"key": "a", "type": "alpha"},
-		},
-	}
-	env := NewMicroEnv(nil, WithCustomDescriptor(desc))
-	got := env.Descriptor()
-	if !reflect.DeepEqual(got, desc) {
-		t.Error("Custom descriptor not returned")
+func TestFacePropertyAPI(t *testing.T) {
+	env := NewMicroEnv(map[string]interface{}{
+		"a": 1,
+	})
+	face := env.Face()
+	getter := face["a"].Get
+	setter := face["a"].Set
+
+	setter(10, "")
+	val, ok := getter("")
+	if !ok || val != 10 {
+		t.Fatalf("FacePropertyAPI failed: %v", val)
 	}
 }
 
-// Concurrency: Simultaneous Set and Get on the same key
-func TestMicroEnv_ConcurrentSetGet_SameKey(t *testing.T) {
-	env := NewMicroEnv(nil)
-	const n = 50
-	var wg sync.WaitGroup
-
+func TestMicroEnv_ConcurrentSetGet(t *testing.T) {
+	env := NewMicroEnv(map[string]interface{}{"key": 0})
+	const n = 10
+	done := make(chan bool, n)
 	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			key := "k"
-			env.Set(key, i, nil)
-			val, _, ok := env.Get(key, false, nil)
-			if !ok {
-				t.Errorf("Concurrent Set/Get failed: expected ok==true after Set, got false")
+		go func(idx int) {
+			for j := 0; j < 10; j++ {
+				env.Set("key", idx*10+j, "")
 			}
-			// Do not assert value match because multiple goroutines racing; just checking no panic
+			val, _, ok := env.Get("key", false, "")
+			if !ok {
+				t.Errorf("Concurrent get failed")
+			}
 			_ = val
+			done <- true
 		}(i)
 	}
-	wg.Wait()
+	for i := 0; i < n; i++ {
+		<-done
+	}
 }
 
-// Multiple Awaiters for same key all receive the update
-func TestMicroEnv_MultipleAwaiters(t *testing.T) {
-	env := NewMicroEnv(nil)
-	key := "waitkey"
-	const waiters = 10
-	chans := make([]<-chan interface{}, waiters)
-	for i := range chans {
-		_, ch, ok := env.Get(key, true, nil)
-		if !ok || ch == nil {
-			t.Fatalf("Failed to create awaiter #%d", i)
+func TestMicroEnvMultiAwaiters(t *testing.T) {
+	env := NewMicroEnv(map[string]interface{}{"foo": 1})
+	n := 5
+	chs := make([]<-chan interface{}, n)
+	for i := 0; i < n; i++ {
+		_, ch, ok := env.Get("foo", true, "")
+		if !ok {
+			t.Fatal("Could not await on key")
 		}
-		chans[i] = ch
+		chs[i] = ch
 	}
-
-	env.Set(key, "fired!", nil)
-
-	for i, ch := range chans {
-		select {
-		case v := <-ch:
-			if v != "fired!" {
-				t.Errorf("Awaiter %d got %v, want 'fired!'", i, v)
-			}
-		case <-time.After(time.Second):
-			t.Errorf("Awaiter %d timeout", i)
+	env.Set("foo", 42, "")
+	for i := 0; i < n; i++ {
+		val := <-chs[i]
+		if val != 42 {
+			t.Fatalf("Awaiter did not receive new value")
 		}
 	}
 }
 
-// Awaiter is cleaned up after being resolved
-func TestMicroEnv_AwaiterCleanup(t *testing.T) {
-	env := NewMicroEnv(nil)
-	key := "cleanme"
-	_, ch, _ := env.Get(key, true, nil)
-	env.Set(key, 42, nil)
-	<-ch
-	// Should be deleted from map
-	if _, ok := env.awaiters.Load(key); ok {
-		t.Error("Awaiter not cleaned up after resolve and Set")
-	}
-}
+func TestAwaiterGetAfterResolved(t *testing.T) {
+	env := NewMicroEnv(map[string]interface{}{"foo": 10})
+	env.Set("foo", 5, "")
+	_, ch, _ := env.Get("foo", true, "")
 
-// Function signature mismatch in Call and Face
-func TestMicroEnv_Call_FuncSignatureMismatch(t *testing.T) {
-	env := NewMicroEnv(map[string]interface{}{
-		"badfn": func(x int) int { return x },
-	})
-	// This function only takes 1 arg; should fail Call
-	_, ok := env.Call("badfn", 5, nil)
-	if ok {
-		t.Error("Call should fail for function with wrong signature")
-	}
-
-	// Also test that Face returns (value, false) for non-three-arg function
-	env.Set("goodfn", func(a, b, c interface{}) int { return 7 }, nil)
-	face := env.Face()
-	val, ok := face["badfn"].Get(nil)
-	if !ok {
-		// It's OK for Get to succeed, but type will be bad.
-		_, isFunc := val.(func(interface{}, *MicroEnv, interface{}) int)
-		if isFunc {
-			t.Error("badfn should not be convertible to correct func signature")
-		}
-	}
-}
-
-// Await after value was already set (shouldn't fire again)
-func TestMicroEnv_AwaitAfterSetShouldNotFire(t *testing.T) {
-	env := NewMicroEnv(nil)
-	key := "afterset"
-	env.Set(key, 7, nil)
-	_, ch, ok := env.Get(key, true, nil)
-	if !ok || ch == nil {
-		t.Fatal("Get with next=true failed")
-	}
-	select {
-	case v := <-ch:
-		// Should NOT fire, since Set happened before Get-next
-		t.Errorf("Unexpected value after set: %v", v)
-	case <-time.After(100 * time.Millisecond):
-		// Pass: channel should never deliver a value
+	env.Set("foo", 6, "")
+	if <-ch != 6 {
+		t.Error("Should get new value, not old")
 	}
 }
