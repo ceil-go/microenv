@@ -81,7 +81,7 @@ func TestMicroEnvCustomGetSet(t *testing.T) {
 }
 
 func TestMicroEnvCall(t *testing.T) {
-	sumFunc := func(payload interface{}, m *MicroEnv, caller interface{}) int {
+	sumFunc := func(payload interface{}, data *sync.Map, caller interface{}) int {
 		vals := payload.([]int)
 		return vals[0] + vals[1]
 	}
