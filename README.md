@@ -19,7 +19,7 @@ package main
 import (
     "fmt"
     "sync"
-    "yourmodule/microenv"
+    "github.com/ceil-go/microenv"
 )
 
 func main() {
